@@ -15,6 +15,23 @@ STATS_DIR="temp/stats"
 STATS_FILE="${STATS_DIR}/.usage_backup.json"
 SECRET_FILE="${STATS_DIR}/.api_secret"
 WITH_USAGE=false
+DOCKER_COMPOSE_CMD=()
+DOCKER_COMPOSE_HINT=""
+
+resolve_docker_compose_cmd() {
+  if docker compose version >/dev/null 2>&1; then
+    DOCKER_COMPOSE_CMD=(docker compose)
+    DOCKER_COMPOSE_HINT="docker compose"
+    return 0
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    DOCKER_COMPOSE_CMD=(docker-compose)
+    DOCKER_COMPOSE_HINT="docker-compose"
+    return 0
+  fi
+  echo "Error: neither 'docker compose' nor 'docker-compose' is available."
+  exit 1
+}
 
 get_port() {
   if [[ -f "config.yaml" ]]; then
@@ -114,6 +131,8 @@ if [[ "${1:-}" == "--with-usage" ]]; then
   export_stats_api_secret
 fi
 
+resolve_docker_compose_cmd
+
 # --- Step 1: Choose Environment ---
 echo "Please select an option:"
 echo "1) Run using Pre-built Image (Recommended)"
@@ -127,13 +146,13 @@ case "$choice" in
     if [[ "${WITH_USAGE}" == "true" ]]; then
       export_stats
     fi
-    docker compose up -d --remove-orphans --no-build
+    "${DOCKER_COMPOSE_CMD[@]}" up -d --remove-orphans --no-build
     if [[ "${WITH_USAGE}" == "true" ]]; then
       wait_for_service
       import_stats
     fi
     echo "Services are starting from remote image."
-    echo "Run 'docker compose logs -f' to see the logs."
+    echo "Run '${DOCKER_COMPOSE_HINT} logs -f' to see the logs."
     ;;
   2)
     echo "--- Building from Source and Running ---"
@@ -153,7 +172,7 @@ case "$choice" in
     export CLI_PROXY_IMAGE="cli-proxy-api:local"
 
     echo "Building the Docker image..."
-    docker compose build \
+    "${DOCKER_COMPOSE_CMD[@]}" build \
       --build-arg VERSION="${VERSION}" \
       --build-arg COMMIT="${COMMIT}" \
       --build-arg BUILD_DATE="${BUILD_DATE}"
@@ -163,7 +182,7 @@ case "$choice" in
     fi
 
     echo "Starting the services..."
-    docker compose up -d --remove-orphans --pull never
+    "${DOCKER_COMPOSE_CMD[@]}" up -d --remove-orphans --pull never
 
     if [[ "${WITH_USAGE}" == "true" ]]; then
       wait_for_service
@@ -171,7 +190,7 @@ case "$choice" in
     fi
 
     echo "Build complete. Services are starting."
-    echo "Run 'docker compose logs -f' to see the logs."
+    echo "Run '${DOCKER_COMPOSE_HINT} logs -f' to see the logs."
     ;;
   *)
     echo "Invalid choice. Please enter 1 or 2."
