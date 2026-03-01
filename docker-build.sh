@@ -182,7 +182,7 @@ case "$choice" in
     fi
 
     echo "Starting the services..."
-    "${DOCKER_COMPOSE_CMD[@]}" up -d --remove-orphans --pull never
+    "${DOCKER_COMPOSE_CMD[@]}" up -d --remove-orphans --pull never --force-recreate
 
     if [[ "${WITH_USAGE}" == "true" ]]; then
       wait_for_service
