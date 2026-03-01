@@ -675,6 +675,18 @@ func (h *Handler) authIDForPath(path string) string {
 	if authDir == "" {
 		return path
 	}
+	// Normalize both paths to absolute so filepath.Rel succeeds even when
+	// authDir is relative but path is absolute (e.g. after filepath.Abs in UploadAuthFile).
+	if !filepath.IsAbs(authDir) {
+		if abs, err := filepath.Abs(authDir); err == nil {
+			authDir = abs
+		}
+	}
+	if !filepath.IsAbs(path) {
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+	}
 	if rel, err := filepath.Rel(authDir, path); err == nil && rel != "" {
 		return rel
 	}
