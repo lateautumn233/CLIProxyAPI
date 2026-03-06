@@ -514,6 +514,14 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 
+		mgmt.GET("/usage-statistics-persistence", s.mgmt.GetUsageStatisticsPersistence)
+		mgmt.PUT("/usage-statistics-persistence", s.mgmt.PutUsageStatisticsPersistence)
+		mgmt.PATCH("/usage-statistics-persistence", s.mgmt.PutUsageStatisticsPersistence)
+
+		mgmt.GET("/usage-statistics-save-interval", s.mgmt.GetUsageStatisticsSaveInterval)
+		mgmt.PUT("/usage-statistics-save-interval", s.mgmt.PutUsageStatisticsSaveInterval)
+		mgmt.PATCH("/usage-statistics-save-interval", s.mgmt.PutUsageStatisticsSaveInterval)
+
 		mgmt.GET("/proxy-url", s.mgmt.GetProxyURL)
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
@@ -913,6 +921,12 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 
 	if oldCfg == nil || oldCfg.UsageStatisticsEnabled != cfg.UsageStatisticsEnabled {
 		usage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
+	}
+
+	if oldCfg == nil ||
+		oldCfg.UsageStatisticsPersistence != cfg.UsageStatisticsPersistence ||
+		oldCfg.UsageStatisticsSaveInterval != cfg.UsageStatisticsSaveInterval {
+		usage.ApplyPersistenceConfig(cfg.UsageStatisticsPersistence, cfg.UsageStatisticsSaveInterval)
 	}
 
 	if s.requestLogger != nil && (oldCfg == nil || oldCfg.ErrorLogsMaxFiles != cfg.ErrorLogsMaxFiles) {

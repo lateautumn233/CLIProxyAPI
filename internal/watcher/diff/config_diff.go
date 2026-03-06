@@ -39,6 +39,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.UsageStatisticsEnabled != newCfg.UsageStatisticsEnabled {
 		changes = append(changes, fmt.Sprintf("usage-statistics-enabled: %t -> %t", oldCfg.UsageStatisticsEnabled, newCfg.UsageStatisticsEnabled))
 	}
+	if oldCfg.UsageStatisticsPersistence != newCfg.UsageStatisticsPersistence {
+		changes = append(changes, fmt.Sprintf("usage-statistics-persistence: %t -> %t", oldCfg.UsageStatisticsPersistence, newCfg.UsageStatisticsPersistence))
+	}
+	if oldCfg.UsageStatisticsSaveInterval != newCfg.UsageStatisticsSaveInterval {
+		changes = append(changes, fmt.Sprintf("usage-statistics-save-interval: %d -> %d", oldCfg.UsageStatisticsSaveInterval, newCfg.UsageStatisticsSaveInterval))
+	}
 	if oldCfg.DisableCooling != newCfg.DisableCooling {
 		changes = append(changes, fmt.Sprintf("disable-cooling: %t -> %t", oldCfg.DisableCooling, newCfg.DisableCooling))
 	}

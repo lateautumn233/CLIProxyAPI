@@ -193,7 +193,35 @@ func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
 }
 
-// UsageStatisticsEnabled
+// UsageStatisticsPersistence
+func (h *Handler) GetUsageStatisticsPersistence(c *gin.Context) {
+	c.JSON(200, gin.H{"usage-statistics-persistence": h.cfg.UsageStatisticsPersistence})
+}
+func (h *Handler) PutUsageStatisticsPersistence(c *gin.Context) {
+	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsPersistence = v })
+}
+
+// UsageStatisticsSaveInterval
+func (h *Handler) GetUsageStatisticsSaveInterval(c *gin.Context) {
+	c.JSON(200, gin.H{"usage-statistics-save-interval": h.cfg.UsageStatisticsSaveInterval})
+}
+func (h *Handler) PutUsageStatisticsSaveInterval(c *gin.Context) {
+	var body struct {
+		Value *int `json:"value"`
+	}
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	value := *body.Value
+	if value < 10 {
+		value = 10
+	}
+	h.cfg.UsageStatisticsSaveInterval = value
+	h.persist(c)
+}
+
+// LoggingToFile
 func (h *Handler) GetLoggingToFile(c *gin.Context) {
 	c.JSON(200, gin.H{"logging-to-file": h.cfg.LoggingToFile})
 }

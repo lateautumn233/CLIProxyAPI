@@ -64,6 +64,15 @@ type Config struct {
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
+	// UsageStatisticsPersistence enables periodic persistence of usage statistics to the logs directory.
+	// When enabled, a background goroutine writes the current snapshot to logs/usage-statistics.json
+	// at the configured interval. On startup, any existing file is loaded and merged into memory.
+	UsageStatisticsPersistence bool `yaml:"usage-statistics-persistence" json:"usage-statistics-persistence"`
+
+	// UsageStatisticsSaveInterval controls how often (in seconds) the usage statistics snapshot
+	// is persisted to disk. Only effective when UsageStatisticsPersistence is true. Default is 300 (5 minutes).
+	UsageStatisticsSaveInterval int `yaml:"usage-statistics-save-interval" json:"usage-statistics-save-interval"`
+
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
@@ -629,6 +638,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.UsageStatisticsPersistence = false
+	cfg.UsageStatisticsSaveInterval = 300
 	cfg.DisableCooling = false
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
@@ -684,6 +695,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if cfg.LogsMaxTotalSizeMB < 0 {
 		cfg.LogsMaxTotalSizeMB = 0
+	}
+
+	if cfg.UsageStatisticsSaveInterval < 10 {
+		cfg.UsageStatisticsSaveInterval = 10
 	}
 
 	if cfg.ErrorLogsMaxFiles < 0 {

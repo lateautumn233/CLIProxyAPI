@@ -62,6 +62,14 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
+# When true, periodically persist in-memory usage statistics to logs/usage-statistics.json.
+# On startup, any existing file is loaded and merged into memory automatically.
+usage-statistics-persistence: false
+
+# How often (in seconds) usage statistics are saved to disk. Minimum is 10. Default is 300 (5 minutes).
+# Only effective when usage-statistics-persistence is true.
+usage-statistics-save-interval: 300
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
 

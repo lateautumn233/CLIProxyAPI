@@ -415,6 +415,13 @@ func main() {
 		}
 	}
 	usage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
+	if cfg.UsageStatisticsPersistence {
+		pm := usage.NewPersistenceManager(usage.GetRequestStatistics(), "logs", cfg.UsageStatisticsSaveInterval)
+		pm.Load()
+		pm.Start()
+		usage.SetDefaultPersistenceManager(pm)
+		defer pm.Stop()
+	}
 	coreauth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
