@@ -1,6 +1,9 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -206,5 +209,44 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), "error-") && strings.HasSuffix(entry.Name(), ".log") {
 			t.Fatalf("unexpected forced error log in config dir %s", configLogsDir)
 		}
+	}
+}
+
+func TestManagementRoutes_CompressJSONResponses(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "secret")
+
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/usage", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want %q", got, "gzip")
+	}
+
+	reader, err := gzip.NewReader(bytes.NewReader(rr.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("failed to create gzip reader: %v", err)
+	}
+	defer func() {
+		if errClose := reader.Close(); errClose != nil {
+			t.Fatalf("failed to close gzip reader: %v", errClose)
+		}
+	}()
+
+	bodyBytes, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read compressed response: %v", err)
+	}
+	body := string(bodyBytes)
+	if !strings.Contains(body, `"usage"`) {
+		t.Fatalf("response body missing usage payload: %s", body)
 	}
 }
