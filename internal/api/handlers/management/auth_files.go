@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -54,6 +55,19 @@ type callbackForwarder struct {
 	provider string
 	server   *http.Server
 	done     chan struct{}
+}
+
+type authUploadFailure struct {
+	Name   string `json:"name"`
+	Error  string `json:"error"`
+	Status int    `json:"status,omitempty"`
+}
+
+type authUploadResponse struct {
+	Status   string              `json:"status"`
+	Uploaded []string            `json:"uploaded,omitempty"`
+	Failed   []authUploadFailure `json:"failed,omitempty"`
+	Total    int                 `json:"total"`
 }
 
 var (
@@ -517,39 +531,25 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 	c.Data(200, "application/json", data)
 }
 
-// Upload auth file: multipart or raw JSON with ?name=
+// Upload auth file(s): multipart for one or more files, or raw JSON with ?name=
 func (h *Handler) UploadAuthFile(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
 	}
 	ctx := c.Request.Context()
-	if file, err := c.FormFile("file"); err == nil && file != nil {
-		name := filepath.Base(file.Filename)
-		if !strings.HasSuffix(strings.ToLower(name), ".json") {
-			c.JSON(400, gin.H{"error": "file must be .json"})
+	if isMultipartUploadRequest(c) {
+		reader, err := c.Request.MultipartReader()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to create multipart reader: %v", err)})
 			return
 		}
-		dst := filepath.Join(h.cfg.AuthDir, name)
-		if !filepath.IsAbs(dst) {
-			if abs, errAbs := filepath.Abs(dst); errAbs == nil {
-				dst = abs
-			}
-		}
-		if errSave := c.SaveUploadedFile(file, dst); errSave != nil {
-			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to save file: %v", errSave)})
+		statusCode, response, errHandle := h.handleMultipartAuthUpload(ctx, reader)
+		if errHandle != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errHandle.Error()})
 			return
 		}
-		data, errRead := os.ReadFile(dst)
-		if errRead != nil {
-			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read saved file: %v", errRead)})
-			return
-		}
-		if errReg := h.registerAuthFromFile(ctx, dst, data); errReg != nil {
-			c.JSON(500, gin.H{"error": errReg.Error()})
-			return
-		}
-		c.JSON(200, gin.H{"status": "ok"})
+		c.JSON(statusCode, response)
 		return
 	}
 	name := c.Query("name")
@@ -566,21 +566,16 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "failed to read body"})
 		return
 	}
-	dst := filepath.Join(h.cfg.AuthDir, filepath.Base(name))
-	if !filepath.IsAbs(dst) {
-		if abs, errAbs := filepath.Abs(dst); errAbs == nil {
-			dst = abs
-		}
-	}
-	if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
-		c.JSON(500, gin.H{"error": fmt.Sprintf("failed to write file: %v", errWrite)})
-		return
-	}
-	if err = h.registerAuthFromFile(ctx, dst, data); err != nil {
+	dst := h.resolveAuthUploadPath(filepath.Base(name))
+	if err = h.saveAndRegisterAuthFromFile(ctx, dst, data); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"status": "ok"})
+	c.JSON(http.StatusOK, authUploadResponse{
+		Status:   "ok",
+		Uploaded: []string{filepath.Base(name)},
+		Total:    1,
+	})
 }
 
 // Delete auth files: single by name or all
@@ -709,23 +704,161 @@ func (h *Handler) authIDForPath(path string) string {
 	return id
 }
 
-func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []byte) error {
-	if h.authManager == nil {
-		return nil
+func (h *Handler) resolveAuthUploadPath(name string) string {
+	dst := filepath.Join(h.cfg.AuthDir, filepath.Base(strings.TrimSpace(name)))
+	if !filepath.IsAbs(dst) {
+		if abs, errAbs := filepath.Abs(dst); errAbs == nil {
+			dst = abs
+		}
 	}
+	return dst
+}
+
+func isMultipartUploadRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
+	return strings.HasPrefix(contentType, "multipart/form-data")
+}
+
+func isAuthUploadField(formName string) bool {
+	switch strings.TrimSpace(formName) {
+	case "files", "file":
+		return true
+	default:
+		return false
+	}
+}
+
+func classifyAuthUploadError(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.HasPrefix(message, "invalid auth file"),
+		strings.Contains(message, "must be .json"),
+		strings.Contains(message, "auth path is empty"):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func buildAuthUploadResponse(uploaded []string, failed []authUploadFailure) (int, authUploadResponse) {
+	response := authUploadResponse{
+		Uploaded: uploaded,
+		Failed:   failed,
+		Total:    len(uploaded) + len(failed),
+	}
+	switch {
+	case len(failed) == 0:
+		response.Status = "ok"
+		return http.StatusOK, response
+	case len(uploaded) == 0:
+		response.Status = "error"
+		statusCode := http.StatusBadRequest
+		for _, item := range failed {
+			if item.Status >= http.StatusInternalServerError {
+				statusCode = http.StatusInternalServerError
+				break
+			}
+			if item.Status >= http.StatusBadRequest && item.Status < http.StatusInternalServerError {
+				statusCode = item.Status
+			}
+		}
+		return statusCode, response
+	default:
+		response.Status = "partial"
+		return http.StatusMultiStatus, response
+	}
+}
+
+func (h *Handler) handleMultipartAuthUpload(ctx context.Context, reader *multipart.Reader) (int, authUploadResponse, error) {
+	if reader == nil {
+		return http.StatusBadRequest, authUploadResponse{}, fmt.Errorf("multipart reader unavailable")
+	}
+
+	uploaded := make([]string, 0)
+	failed := make([]authUploadFailure, 0)
+	fileCount := 0
+
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return http.StatusBadRequest, authUploadResponse{}, fmt.Errorf("failed to read multipart form: %w", err)
+		}
+		if part == nil {
+			continue
+		}
+		if !isAuthUploadField(part.FormName()) {
+			_, _ = io.Copy(io.Discard, part)
+			_ = part.Close()
+			continue
+		}
+
+		fileCount++
+		name := filepath.Base(strings.TrimSpace(part.FileName()))
+		if name == "" || name == "." || !strings.HasSuffix(strings.ToLower(name), ".json") {
+			failed = append(failed, authUploadFailure{
+				Name:   strings.TrimSpace(part.FileName()),
+				Error:  "file must be .json",
+				Status: http.StatusBadRequest,
+			})
+			_, _ = io.Copy(io.Discard, part)
+			_ = part.Close()
+			continue
+		}
+
+		data, errRead := io.ReadAll(part)
+		_ = part.Close()
+		if errRead != nil {
+			failed = append(failed, authUploadFailure{
+				Name:   name,
+				Error:  fmt.Sprintf("failed to read uploaded file: %v", errRead),
+				Status: http.StatusInternalServerError,
+			})
+			continue
+		}
+
+		dst := h.resolveAuthUploadPath(name)
+		if errSave := h.saveAndRegisterAuthFromFile(ctx, dst, data); errSave != nil {
+			failed = append(failed, authUploadFailure{
+				Name:   name,
+				Error:  errSave.Error(),
+				Status: classifyAuthUploadError(errSave),
+			})
+			continue
+		}
+		uploaded = append(uploaded, name)
+	}
+
+	if fileCount == 0 {
+		return http.StatusBadRequest, authUploadResponse{}, fmt.Errorf("no files uploaded")
+	}
+
+	statusCode, response := buildAuthUploadResponse(uploaded, failed)
+	return statusCode, response, nil
+}
+
+func (h *Handler) buildAuthRecordFromFile(path string, data []byte) (*coreauth.Auth, error) {
 	if path == "" {
-		return fmt.Errorf("auth path is empty")
+		return nil, fmt.Errorf("auth path is empty")
 	}
 	if data == nil {
 		var err error
 		data, err = os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("failed to read auth file: %w", err)
+			return nil, fmt.Errorf("failed to read auth file: %w", err)
 		}
 	}
 	metadata := make(map[string]any)
 	if err := json.Unmarshal(data, &metadata); err != nil {
-		return fmt.Errorf("invalid auth file: %w", err)
+		return nil, fmt.Errorf("invalid auth file: %w", err)
 	}
 	provider, _ := metadata["type"].(string)
 	if provider == "" {
@@ -759,9 +892,19 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 	if hasLastRefresh {
 		auth.LastRefreshedAt = lastRefresh
 	}
-	if existing, ok := h.authManager.GetByID(authID); ok {
+	return auth, nil
+}
+
+func (h *Handler) upsertPreparedAuth(ctx context.Context, auth *coreauth.Auth) error {
+	if h.authManager == nil {
+		return nil
+	}
+	if auth == nil {
+		return fmt.Errorf("auth record is nil")
+	}
+	if existing, ok := h.authManager.GetByID(auth.ID); ok {
 		auth.CreatedAt = existing.CreatedAt
-		if !hasLastRefresh {
+		if auth.LastRefreshedAt.IsZero() {
 			auth.LastRefreshedAt = existing.LastRefreshedAt
 		}
 		auth.NextRefreshAfter = existing.NextRefreshAfter
@@ -771,6 +914,34 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 	}
 	_, err := h.authManager.Register(ctx, auth)
 	return err
+}
+
+func (h *Handler) saveAndRegisterAuthFromFile(ctx context.Context, path string, data []byte) error {
+	auth, err := h.buildAuthRecordFromFile(path, data)
+	if err != nil {
+		return err
+	}
+	store := h.tokenStoreWithBaseDir()
+	if store == nil {
+		return fmt.Errorf("token store unavailable")
+	}
+	savedPath, errSave := store.Save(ctx, auth)
+	if errSave != nil {
+		return fmt.Errorf("failed to save auth file: %w", errSave)
+	}
+	if strings.TrimSpace(savedPath) != "" {
+		auth.Attributes["path"] = savedPath
+		auth.FileName = filepath.Base(savedPath)
+	}
+	return h.upsertPreparedAuth(coreauth.WithSkipPersist(ctx), auth)
+}
+
+func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []byte) error {
+	auth, err := h.buildAuthRecordFromFile(path, data)
+	if err != nil {
+		return err
+	}
+	return h.upsertPreparedAuth(ctx, auth)
 }
 
 // PatchAuthFileStatus toggles the disabled state of an auth file
