@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -246,5 +247,49 @@ func TestManagementRoutes_CompressJSONResponses(t *testing.T) {
 	body := string(bodyBytes)
 	if !strings.Contains(body, `"usage"`) {
 		t.Fatalf("response body missing usage payload: %s", body)
+	}
+}
+
+func TestManagementUsageModelPricesRoute_PersistsOverrides(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "secret")
+
+	server := newTestServer(t)
+
+	putReq := httptest.NewRequest(
+		http.MethodPut,
+		"/v0/management/usage/model-prices",
+		strings.NewReader(`{"prices":{"gpt-5.4":{"prompt":2.5,"completion":15,"cache":2.5},"gemini-2.5-pro":{"prompt":1.25,"completion":10}}}`),
+	)
+	putReq.Header.Set("Authorization", "Bearer secret")
+	putReq.Header.Set("Content-Type", "application/json")
+
+	putRec := httptest.NewRecorder()
+	server.engine.ServeHTTP(putRec, putReq)
+
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want %d; body=%s", putRec.Code, http.StatusOK, putRec.Body.String())
+	}
+
+	var putBody struct {
+		Prices map[string]map[string]float64 `json:"prices"`
+	}
+	if err := json.Unmarshal(putRec.Body.Bytes(), &putBody); err != nil {
+		t.Fatalf("failed to parse PUT response: %v", err)
+	}
+	if got := putBody.Prices["gemini-2.5-pro"]["cache"]; got != 1.25 {
+		t.Fatalf("gemini-2.5-pro cache = %v, want %v", got, 1.25)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v0/management/usage/model-prices", nil)
+	getReq.Header.Set("Authorization", "Bearer secret")
+
+	getRec := httptest.NewRecorder()
+	server.engine.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d; body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"gpt-5.4"`) {
+		t.Fatalf("GET response missing persisted model prices: %s", getRec.Body.String())
 	}
 }
