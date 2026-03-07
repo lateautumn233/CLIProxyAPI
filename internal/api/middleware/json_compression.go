@@ -9,18 +9,20 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 )
 
 type compressionEncoding string
 
 const (
 	compressionIdentity compressionEncoding = ""
+	compressionZstd     compressionEncoding = "zstd"
 	compressionGzip     compressionEncoding = "gzip"
 	compressionBrotli   compressionEncoding = "br"
 )
 
 // JSONCompressionMiddleware compresses JSON management responses when the client
-// explicitly advertises gzip or brotli support.
+// explicitly advertises zstd, brotli, or gzip support.
 func JSONCompressionMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		encoding := selectCompressionEncoding(c.GetHeader("Accept-Encoding"))
@@ -41,6 +43,7 @@ type jsonCompressionWriter struct {
 	gin.ResponseWriter
 	encoding    compressionEncoding
 	writer      io.Writer
+	zstdWriter  *zstd.Encoder
 	gzipWriter  *gzip.Writer
 	brWriter    *brotli.Writer
 	compressing bool
@@ -102,6 +105,8 @@ func (w *jsonCompressionWriter) Flush() {
 	}
 	if w.compressing {
 		switch w.encoding {
+		case compressionZstd:
+			_ = w.zstdWriter.Flush()
 		case compressionGzip:
 			_ = w.gzipWriter.Flush()
 		case compressionBrotli:
@@ -116,6 +121,8 @@ func (w *jsonCompressionWriter) Flush() {
 func (w *jsonCompressionWriter) Close() {
 	if w.compressing {
 		switch w.encoding {
+		case compressionZstd:
+			_ = w.zstdWriter.Close()
 		case compressionGzip:
 			_ = w.gzipWriter.Close()
 		case compressionBrotli:
@@ -143,12 +150,14 @@ func (w *jsonCompressionWriter) shouldCompress() bool {
 }
 
 func (w *jsonCompressionWriter) startCompression() {
-	header := w.ResponseWriter.Header()
-	header.Del("Content-Length")
-	header.Set("Content-Encoding", string(w.encoding))
-	addVaryHeader(header, "Accept-Encoding")
-
 	switch w.encoding {
+	case compressionZstd:
+		zw, err := zstd.NewWriter(w.ResponseWriter)
+		if err != nil {
+			return
+		}
+		w.zstdWriter = zw
+		w.writer = zw
 	case compressionBrotli:
 		bw := brotli.NewWriterLevel(w.ResponseWriter, brotli.DefaultCompression)
 		w.brWriter = bw
@@ -160,6 +169,11 @@ func (w *jsonCompressionWriter) startCompression() {
 	default:
 		return
 	}
+
+	header := w.ResponseWriter.Header()
+	header.Del("Content-Length")
+	header.Set("Content-Encoding", string(w.encoding))
+	addVaryHeader(header, "Accept-Encoding")
 	w.compressing = true
 }
 
@@ -244,6 +258,8 @@ func selectCompressionEncoding(acceptEncoding string) compressionEncoding {
 		}
 
 		switch strings.ToLower(name) {
+		case string(compressionZstd):
+			best = pickBetterCandidate(best, candidate{encoding: compressionZstd, q: q, order: idx})
 		case string(compressionBrotli):
 			best = pickBetterCandidate(best, candidate{encoding: compressionBrotli, q: q, order: idx})
 		case string(compressionGzip):
@@ -257,7 +273,7 @@ func selectCompressionEncoding(acceptEncoding string) compressionEncoding {
 		return best.encoding
 	}
 	if wildcardQ > 0 {
-		return compressionGzip
+		return compressionZstd
 	}
 	return compressionIdentity
 }
@@ -280,11 +296,24 @@ func pickBetterCandidate(current, next struct {
 	if next.q < current.q {
 		return current
 	}
-	if next.encoding == compressionBrotli && current.encoding != compressionBrotli {
+	if compressionPreference(next.encoding) > compressionPreference(current.encoding) {
 		return next
 	}
 	if next.order < current.order {
 		return next
 	}
 	return current
+}
+
+func compressionPreference(encoding compressionEncoding) int {
+	switch encoding {
+	case compressionZstd:
+		return 3
+	case compressionBrotli:
+		return 2
+	case compressionGzip:
+		return 1
+	default:
+		return 0
+	}
 }

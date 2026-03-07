@@ -12,6 +12,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 )
 
 func TestJSONCompressionMiddleware_CompressesJSON(t *testing.T) {
@@ -29,30 +30,26 @@ func TestJSONCompressionMiddleware_CompressesJSON(t *testing.T) {
 		name           string
 		acceptEncoding string
 		wantEncoding   string
-		readBody       func(*testing.T, []byte) []byte
 	}{
 		{
-			name:           "brotli preferred",
+			name:           "zstd preferred",
+			acceptEncoding: "gzip, br, zstd",
+			wantEncoding:   "zstd",
+		},
+		{
+			name:           "brotli fallback",
 			acceptEncoding: "br, gzip",
 			wantEncoding:   "br",
-			readBody: func(t *testing.T, body []byte) []byte {
-				t.Helper()
-				return mustReadAll(t, brotli.NewReader(bytes.NewReader(body)))
-			},
 		},
 		{
 			name:           "gzip fallback",
 			acceptEncoding: "gzip",
 			wantEncoding:   "gzip",
-			readBody: func(t *testing.T, body []byte) []byte {
-				t.Helper()
-				reader, err := gzip.NewReader(bytes.NewReader(body))
-				if err != nil {
-					t.Fatalf("failed to create gzip reader: %v", err)
-				}
-				defer func() { _ = reader.Close() }()
-				return mustReadAll(t, reader)
-			},
+		},
+		{
+			name:           "higher q beats priority",
+			acceptEncoding: "zstd;q=0.7, br;q=0.8, gzip;q=1",
+			wantEncoding:   "gzip",
 		},
 	}
 
@@ -74,7 +71,7 @@ func TestJSONCompressionMiddleware_CompressesJSON(t *testing.T) {
 				t.Fatalf("Vary = %q, want %q", vary, "Accept-Encoding")
 			}
 
-			raw := tc.readBody(t, rec.Body.Bytes())
+			raw := decodeCompressedBody(t, tc.wantEncoding, rec.Body.Bytes())
 			var payload map[string]string
 			if err := json.Unmarshal(raw, &payload); err != nil {
 				t.Fatalf("failed to decode response: %v", err)
@@ -110,6 +107,31 @@ func TestJSONCompressionMiddleware_SkipsNonJSON(t *testing.T) {
 	}
 	if body := rec.Body.String(); body != "foo: bar\n" {
 		t.Fatalf("unexpected body: %q", body)
+	}
+}
+
+func decodeCompressedBody(t *testing.T, encoding string, body []byte) []byte {
+	t.Helper()
+
+	switch encoding {
+	case "br":
+		return mustReadAll(t, brotli.NewReader(bytes.NewReader(body)))
+	case "gzip":
+		reader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("failed to create gzip reader: %v", err)
+		}
+		defer func() { _ = reader.Close() }()
+		return mustReadAll(t, reader)
+	case "zstd":
+		reader, err := zstd.NewReader(bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("failed to create zstd reader: %v", err)
+		}
+		defer reader.Close()
+		return mustReadAll(t, reader)
+	default:
+		return body
 	}
 }
 

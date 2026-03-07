@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"compress/gzip"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	gin "github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -219,7 +219,7 @@ func TestManagementRoutes_CompressJSONResponses(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v0/management/usage", nil)
 	req.Header.Set("Authorization", "Bearer secret")
-	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip, br, zstd")
 
 	rr := httptest.NewRecorder()
 	server.engine.ServeHTTP(rr, req)
@@ -227,18 +227,16 @@ func TestManagementRoutes_CompressJSONResponses(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unexpected status code: got %d body=%s", rr.Code, rr.Body.String())
 	}
-	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
-		t.Fatalf("Content-Encoding = %q, want %q", got, "gzip")
+	if got := rr.Header().Get("Content-Encoding"); got != "zstd" {
+		t.Fatalf("Content-Encoding = %q, want %q", got, "zstd")
 	}
 
-	reader, err := gzip.NewReader(bytes.NewReader(rr.Body.Bytes()))
+	reader, err := zstd.NewReader(bytes.NewReader(rr.Body.Bytes()))
 	if err != nil {
-		t.Fatalf("failed to create gzip reader: %v", err)
+		t.Fatalf("failed to create zstd reader: %v", err)
 	}
 	defer func() {
-		if errClose := reader.Close(); errClose != nil {
-			t.Fatalf("failed to close gzip reader: %v", errClose)
-		}
+		reader.Close()
 	}()
 
 	bodyBytes, err := io.ReadAll(reader)
